@@ -3,7 +3,7 @@ import cv2
 from tqdm import tqdm
 
 # === CONFIG ===
-IMG_SIZE = 512  # Change to 256 for faster training
+IMG_SIZE = 256  # Change to 256 for faster training
 SPLITS = ["train", "val", "test"]
 IMAGE_DIR = "data/images"
 MASK_DIR = "data/masks"
@@ -24,7 +24,18 @@ def resize_and_save(folder_path, size):
 
 if __name__ == "__main__":
     for split in SPLITS:
-        resize_and_save(os.path.join(IMAGE_DIR, split), IMG_SIZE)
-        resize_and_save(os.path.join(MASK_DIR, split), IMG_SIZE)
+        image_path = os.path.join(IMAGE_DIR, split)
+        mask_path = os.path.join(MASK_DIR, split)
+        
+        # Check if directories exist
+        if not os.path.exists(image_path):
+            print(f"⚠️ Directory {image_path} does not exist!")
+            continue
 
-    print("✅ All images and masks resized successfully!")
+        if not os.path.exists(mask_path):
+            print(f"⚠️ Directory {mask_path} does not exist!")
+            continue
+            
+        print(f"📁 Processing {split} split...")
+        resize_and_save(image_path, IMG_SIZE)
+        resize_and_save(mask_path, IMG_SIZE)
