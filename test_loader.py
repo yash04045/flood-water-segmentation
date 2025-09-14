@@ -1,17 +1,22 @@
-from datasetLoader import FloodDataset, get_train_transform
+# test_loader.py
+import torch
 from torch.utils.data import DataLoader
+from datasetLoader import FloodDataset
 
 if __name__ == "__main__":
-    train_dataset = FloodDataset(
-        "data/images/train",
-        "data/masks/train",
-        transforms= get_train_transform()
-    )
+    # Paths
+    image_dir = "data/images/train"
+    mask_dir = "data/masks/train"
 
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True)
+    # Create dataset
+    dataset = FloodDataset(image_dir, mask_dir)
 
-    for imgs, masks in train_loader:
-        print(f"Images: {imgs.shape}, Masks: {masks.shape}")
-        break
+    # DataLoader
+    dataloader = DataLoader(dataset, batch_size=4, shuffle=True, num_workers=2)
 
-    print("✅ Dataset loading works correctly!")
+    # Fetch a batch
+    images, masks = next(iter(dataloader))
+
+    print("Images:", images.shape)   # [B, 3, H, W]
+    print("Masks:", masks.shape)     # [B, H, W]
+    print("Unique values in mask batch:", torch.unique(masks))
