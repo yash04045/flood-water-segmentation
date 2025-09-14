@@ -1,30 +1,39 @@
 import os
 import cv2
 import numpy as np
-from torch.utils.data import Dataset
 import torch
+from torch.utils.data import Dataset
 import albumentations as A
 from albumentations.pytorch import ToTensorV2
 
+# -----------------------
+# Augmentations
+# -----------------------
 def get_train_transform():
-    """Data augmentation pipeline for training."""
     return A.Compose([
         A.HorizontalFlip(p=0.5),
         A.VerticalFlip(p=0.3),
+        A.RandomRotate90(p=0.3),
+        A.Affine(scale=(0.9, 1.1), rotate=(-15, 15), translate_percent=0.1),
         A.RandomBrightnessContrast(p=0.3),
-        A.ShiftScaleRotate(p=0.3),
-        A.Normalize(),  # Normalize images to [0,1]
+        A.Normalize(),
         ToTensorV2()
     ])
 
 def get_val_transform():
-    """Transforms for validation/testing (no heavy augmentation)."""
     return A.Compose([
         A.Normalize(),
         ToTensorV2()
     ])
 
+# -----------------------
+# Dataset
+# -----------------------
 class FloodDataset(Dataset):
+    """
+    FloodNet multiclass dataset
+    Classes: 0–9
+    """
     def __init__(self, img_dir, mask_dir, transforms=None):
         self.img_dir = img_dir
         self.mask_dir = mask_dir
@@ -43,12 +52,19 @@ class FloodDataset(Dataset):
         image = cv2.imread(img_path, cv2.IMREAD_COLOR)
         image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-        # Load mask (grayscale → binary)
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        mask = np.where(mask > 0, 1, 0).astype(np.uint8)  # binary: 0 = background, 1 = flood
+        # Load mask (grayscale, multiclass labels)
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE).astype(np.int64)
 
         if self.transforms:
             augmented = self.transforms(image=image, mask=mask)
             image, mask = augmented["image"], augmented["mask"]
 
-        return image, torch.tensor(mask, dtype=torch.long)
+        # If transforms didn’t already convert to tensor → do it manually
+        if isinstance(image, np.ndarray):
+            image = np.transpose(image, (2, 0, 1))  # HWC → CHW
+            image = torch.tensor(image, dtype=torch.float32)
+
+        if isinstance(mask, np.ndarray):
+            mask = torch.tensor(mask, dtype=torch.long)
+
+        return image, mask
