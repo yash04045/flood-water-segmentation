@@ -1,88 +1,132 @@
 import os
 import torch
+import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.patches import Patch
+from torchvision import models
+from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+import torch.nn as nn
+
 from datasetLoader import FloodDataset, get_val_transform
-import segmentation_models_pytorch as smp
-from torch.utils.data import DataLoader
 
-# ===============================
-# CONFIG
-# ===============================
-IMG_DIR = "data/images/val"
-MASK_DIR = "data/masks/val"
-MODEL_PATH = "best_model.pth"
-DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-NUM_CLASSES = 2  # background + flood
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+NUM_CLASSES = 10
 
-# ===============================
-# DATASET & LOADER
-# ===============================
-dataset = FloodDataset(
-    img_dir=IMG_DIR,
-    mask_dir=MASK_DIR,
-    transforms=get_val_transform()
-)
+# Class names (FloodNet challenge)
+CLASS_NAMES = [
+    "Background", 
+    "Building-flooded", 
+    "Building-non-flooded", 
+    "Road-flooded", 
+    "Road-non-flooded", 
+    "Water", 
+    "Tree", 
+    "Vehicle", 
+    "Pool", 
+    "Grass"
+]
 
-loader = DataLoader(dataset, batch_size=1, shuffle=True)
+# Simple color palette for 10 classes
+COLORS = np.array([
+    [0, 0, 0],         # Background
+    [0, 0, 255],       # Building-flooded
+    [0, 255, 0],       # Building-non-flooded
+    [255, 0, 0],       # Road-flooded
+    [255, 255, 0],     # Road-non-flooded
+    [0, 255, 255],     # Water
+    [255, 0, 255],     # Tree
+    [128, 128, 128],   # Vehicle
+    [255, 165, 0],     # Pool
+    [128, 0, 128],     # Grass
+], dtype=np.uint8)
 
-# ===============================
-# LOAD MODEL
-# ===============================
-model = smp.Unet(
-    encoder_name="resnet34",  # Ensure this matches train.py
-    encoder_weights="imagenet",        # Set to None for inference
-    in_channels=3,
-    classes=2
-).to(DEVICE)
+def decode_segmap(mask):
+    """Convert class mask to RGB image"""
+    return COLORS[mask]
 
-model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
-model.eval()
+def get_legend_elements():
+    """Create legend patches for all classes"""
+    legend_elements = []
+    for class_id, class_name in enumerate(CLASS_NAMES):
+        legend_elements.append(Patch(
+            facecolor=np.array(COLORS[class_id])/255.0,
+            edgecolor='black',
+            label=f"{class_id}: {class_name}"
+        ))
+    return legend_elements
 
-# ===============================
-# VISUALIZATION FUNCTION
-# ===============================
-def visualize(img, mask, pred):
-    plt.figure(figsize=(12, 4))
+def visualize_sample(model, dataset, idx=0):
+    model.eval()
+    image, mask = dataset[idx]
+    image_tensor = image.unsqueeze(0).to(DEVICE)
 
-    # Original Image
-    plt.subplot(1, 4, 1)
-    plt.imshow(img.permute(1, 2, 0).cpu())
-    plt.title("Satellite Image")
-    plt.axis("off")
+    with torch.no_grad():
+        output = model(image_tensor)["out"]
+        pred = torch.argmax(output, dim=1).squeeze().cpu().numpy()
 
-    # Ground Truth Mask
-    plt.subplot(1, 4, 2)
-    plt.imshow(mask.cpu(), cmap="gray")
-    plt.title("Ground Truth Mask")
-    plt.axis("off")
+    # Convert to numpy
+    image_np = image.permute(1, 2, 0).cpu().numpy()
+    mask_np = mask.numpy()
+    pred_np = pred
 
-    # Predicted Mask
-    plt.subplot(1, 4, 3)
-    plt.imshow(pred.cpu(), cmap="gray")
-    plt.title("Predicted Mask")
-    plt.axis("off")
+    # Decode colors
+    mask_color = decode_segmap(mask_np)
+    pred_color = decode_segmap(pred_np)
 
-    # Overlay Prediction on Image
-    plt.subplot(1, 4, 4)
-    plt.imshow(img.permute(1, 2, 0).cpu())
-    plt.imshow(pred.cpu(), cmap="jet", alpha=0.5)  # overlay
-    plt.title("Overlay (Flood Highlight)")
-    plt.axis("off")
+    # Plot
+    fig, axs = plt.subplots(1, 3, figsize=(18, 6))
+    axs[0].imshow(image_np)
+    axs[0].set_title("Input Image")
+    axs[0].axis("off")
 
-    plt.tight_layout()
+    axs[1].imshow(mask_color)
+    axs[1].set_title("Ground Truth")
+    axs[1].axis("off")
+
+    axs[2].imshow(pred_color)
+    axs[2].set_title("Prediction")
+    axs[2].axis("off")
+
+    # Add legend below the plots
+    legend_elements = get_legend_elements()
+    fig.legend(handles=legend_elements, loc="lower center", ncol=5, fontsize=8)
+
+    # Add version info
+    fig.suptitle("FloodNet-Supervised_v1.0", fontsize=12, fontweight="bold")
+
+    plt.tight_layout(rect=[0, 0.05, 1, 0.95])
     plt.show()
 
 
-# ===============================
-# RUN VISUALIZATION
-# ===============================
+def main():
+    # Load dataset
+    val_dataset = FloodDataset("data/images/val", "data/masks/val", transforms=get_val_transform())
+
+    # Find index of target image
+    target_image_name = "7334.jpg"
+    target_idx = None
+    for i, img_name in enumerate(val_dataset.images):
+        if img_name == target_image_name:
+            target_idx = i
+            break
+    if target_idx is None:
+        raise ValueError(f"Image {target_image_name} not found in validation dataset")
+
+    # Load model
+    weights = DeepLabV3_ResNet50_Weights.DEFAULT
+    model = models.segmentation.deeplabv3_resnet50(weights=weights)
+    model.classifier[4] = nn.Conv2d(256, NUM_CLASSES, kernel_size=1)
+    model = model.to(DEVICE)
+
+    # Load trained weights
+    checkpoint_path = "best_model.pth"
+    assert os.path.exists(checkpoint_path), "❌ best_model.pth not found!"
+    model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE))
+    print(f"✅ Loaded best model from {checkpoint_path}")
+
+    # Visualize the sample
+    visualize_sample(model, val_dataset, idx=target_idx)
+
+
 if __name__ == "__main__":
-    with torch.no_grad():
-        for imgs, masks in loader:
-            imgs, masks = imgs.to(DEVICE), masks.to(DEVICE)
-
-            outputs = model(imgs)
-            preds = torch.argmax(outputs, dim=1)
-
-            visualize(imgs[0], masks[0], preds[0])
-            break  # show 1 batch (remove break to show more)
+    main()
