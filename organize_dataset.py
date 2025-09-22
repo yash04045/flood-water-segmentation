@@ -2,7 +2,7 @@ import os
 import shutil
 
 # Source directory where FloodNet-Supervised_v1.0 is extracted
-SRC_DIR = "data/FloodNet-Supervised_v1.0"
+SRC_DIR = "FloodNet-Supervised_v1.0"   # <-- FIXED
 DST_DIR = "data"
 
 splits = ["train", "val", "test"]

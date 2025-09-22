@@ -1,88 +1,104 @@
 import os
 import torch
 import matplotlib.pyplot as plt
-from datasetLoader import FloodDataset, get_val_transform
-import segmentation_models_pytorch as smp
-from torch.utils.data import DataLoader
+import cv2
+import numpy as np
+from matplotlib.patches import Patch
+from datasetLoader import get_val_transform
+from torchvision import models
+from torchvision.models.segmentation.deeplabv3 import DeepLabHead
 
-# ===============================
-# CONFIG
-# ===============================
-IMG_DIR = "data/images/val"
-MASK_DIR = "data/masks/val"
-MODEL_PATH = "best_model.pth"
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-NUM_CLASSES = 2  # background + flood
+NUM_CLASSES = 10
+MODEL_PATH = "best_model.pth"
+IMG_PATH = r"data/images/test/6561.jpg"   # update path as needed
+MASK_PATH = r"data/masks/test/6561_lab.png"  # update path as needed
 
-# ===============================
-# DATASET & LOADER
-# ===============================
-dataset = FloodDataset(
-    img_dir=IMG_DIR,
-    mask_dir=MASK_DIR,
-    transforms=get_val_transform()
-)
+# ✅ Class mapping (your dataset)
+CLASS_NAMES = [
+    "Background",          # 0
+    "Building-flooded",    # 1
+    "Building-non-flooded",# 2
+    "Road-flooded",        # 3
+    "Road-non-flooded",    # 4
+    "Water",               # 5
+    "Tree",                # 6
+    "Vehicle",             # 7
+    "Pool",                # 8
+    "Grass"                # 9
+]
 
-loader = DataLoader(dataset, batch_size=1, shuffle=True)
+# Build model
+weights = None
+model = models.segmentation.deeplabv3_resnet50(weights=weights)
+model.classifier = DeepLabHead(2048, NUM_CLASSES)
+model = model.to(DEVICE)
 
-# ===============================
-# LOAD MODEL
-# ===============================
-model = smp.Unet(
-    encoder_name="resnet34",  # Ensure this matches train.py
-    encoder_weights="imagenet",        # Set to None for inference
-    in_channels=3,
-    classes=2
-).to(DEVICE)
-
-model.load_state_dict(torch.load(MODEL_PATH, map_location=DEVICE))
+# Load weights
+sd = torch.load(MODEL_PATH, map_location=DEVICE)
+model.load_state_dict(sd, strict=False)
 model.eval()
 
-# ===============================
-# VISUALIZATION FUNCTION
-# ===============================
-def visualize(img, mask, pred):
-    plt.figure(figsize=(12, 4))
+transform = get_val_transform()
 
-    # Original Image
-    plt.subplot(1, 4, 1)
-    plt.imshow(img.permute(1, 2, 0).cpu())
-    plt.title("Satellite Image")
-    plt.axis("off")
+# Read image & mask
+img = cv2.imread(IMG_PATH)
+if img is None:
+    raise FileNotFoundError(f"Image not found: {IMG_PATH}")
+img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+mask = cv2.imread(MASK_PATH, cv2.IMREAD_GRAYSCALE)
+if mask is None:
+    raise FileNotFoundError(f"Mask not found: {MASK_PATH}")
 
-    # Ground Truth Mask
-    plt.subplot(1, 4, 2)
-    plt.imshow(mask.cpu(), cmap="gray")
-    plt.title("Ground Truth Mask")
-    plt.axis("off")
+aug = transform(image=img, mask=mask)
+img_t = aug['image'].unsqueeze(0).to(DEVICE)  # (1,C,H,W)
 
-    # Predicted Mask
-    plt.subplot(1, 4, 3)
-    plt.imshow(pred.cpu(), cmap="gray")
-    plt.title("Predicted Mask")
-    plt.axis("off")
+with torch.no_grad():
+    out = model(img_t)['out']
+    pred = torch.argmax(out, dim=1).squeeze(0).cpu().numpy()
 
-    # Overlay Prediction on Image
-    plt.subplot(1, 4, 4)
-    plt.imshow(img.permute(1, 2, 0).cpu())
-    plt.imshow(pred.cpu(), cmap="jet", alpha=0.5)  # overlay
-    plt.title("Overlay (Flood Highlight)")
-    plt.axis("off")
+# ✅ Distinct color map for 10 classes
+colors = np.array([
+    [0, 0, 0],        # Background - black
+    [0, 0, 255],      # Building-flooded - blue
+    [0, 255, 0],      # Building-non-flooded - green
+    [255, 0, 0],      # Road-flooded - red
+    [255, 255, 0],    # Road-non-flooded - yellow
+    [0, 255, 255],    # Water - cyan
+    [0, 128, 0],      # Tree - dark green
+    [255, 165, 0],    # Vehicle - orange
+    [128, 0, 128],    # Pool - purple
+    [192, 192, 192],  # Grass - light gray
+], dtype=np.uint8)
 
-    plt.tight_layout()
-    plt.show()
+# Apply color map
+def decode_segmap(mask, num_classes=NUM_CLASSES):
+    h, w = mask.shape
+    color_mask = np.zeros((h, w, 3), dtype=np.uint8)
+    for cls in range(num_classes):
+        color_mask[mask == cls] = colors[cls]
+    return color_mask
 
+mask_color = decode_segmap(mask)
+pred_color = decode_segmap(pred)
 
-# ===============================
-# RUN VISUALIZATION
-# ===============================
-if __name__ == "__main__":
-    with torch.no_grad():
-        for imgs, masks in loader:
-            imgs, masks = imgs.to(DEVICE), masks.to(DEVICE)
+# Plot
+fig, axes = plt.subplots(1, 4, figsize=(22, 6))
+axes[0].imshow(img); axes[0].set_title("Satellite Image"); axes[0].axis('off')
+axes[1].imshow(mask_color); axes[1].set_title("Ground Truth"); axes[1].axis('off')
+axes[2].imshow(pred_color); axes[2].set_title("Predicted Mask"); axes[2].axis('off')
 
-            outputs = model(imgs)
-            preds = torch.argmax(outputs, dim=1)
+# Overlay
+pred_resized = cv2.resize(pred.astype(np.uint8), (img.shape[1], img.shape[0]), interpolation=cv2.INTER_NEAREST)
+overlay = img.copy()
+for cls in range(NUM_CLASSES):
+    overlay[pred_resized == cls] = colors[cls]
+axes[3].imshow(overlay); axes[3].set_title("Overlay"); axes[3].axis('off')
 
-            visualize(imgs[0], masks[0], preds[0])
-            break  # show 1 batch (remove break to show more)
+# ✅ Legend with class names
+legend_elements = [Patch(facecolor=np.array(colors[i]) / 255.0, edgecolor='black',
+                         label=CLASS_NAMES[i]) for i in range(NUM_CLASSES)]
+fig.legend(handles=legend_elements, loc='center right', title="Classes", fontsize=10)
+
+plt.tight_layout(rect=[0, 0, 0.9, 1])  # leave space for legend
+plt.show()

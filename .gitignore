@@ -1,19 +1,50 @@
-# Ignore virtual environment
+# Virtual environments
 venv/
+.venv/
+.env/
 
-# Ignore dataset files
+# Dataset directories
 data/
+FloodNet-Supervised_v1.0/
 
-# Ignore Python cache files
+# Python cache/files
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*$py.class
 
-# Ignore system files
+# System files
 .DS_Store
 Thumbs.db
 
-# Ignore logs
-*.log
+# IDE/editor
+.vscode/
+.idea/
+*.code-workspace
 
-# Ignore temp files
+# Jupyter
+.ipynb_checkpoints/
+
+# Model/artifact files
+*.pth
+*.pt
+*.onnx
+*.h5
+*.ckpt
+
+# Logs and experiment trackers
+*.log
+logs/
+wandb/
+mlruns/
+outputs/
+
+# Generated artifacts
+metrics.csv
+predictions/
+
+# Temp files
+*.tmp
+*.temp
 tempCodeRunnerFile.py
