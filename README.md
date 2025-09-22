@@ -114,3 +114,26 @@ Class lists are defined in inference/visualization scripts and may vary slightly
 
 ---
 WIP: Contributions and suggestions are welcome while the project evolves.
+
+## Current results (WIP)
+- Environment: CUDA available = True; GPU = NVIDIA GeForce RTX 3050 Laptop GPU
+- Throughput: ~131–135 s/epoch with batch size 2 (observed)
+- Training (validation mIoU reported by `train.py`):
+  - Notable checkpoints: epoch 79 mIoU=0.6644, epoch 96 mIoU=0.6669, epoch 111 mIoU=0.6795, epoch 118 mIoU=0.6817 (best)
+  - Typical losses around Train≈0.27–0.29, Val≈0.32–0.33 near late epochs
+- Evaluation (`evaluate.py` on val split, using `best_model.pth`):
+  - Mean IoU: 0.3150
+  - Mean Dice: 0.2778
+  - Per-class (IoU, Dice):
+    - 0: (0.0148, 0.0041)
+    - 1: (0.2948, 0.0685)
+    - 2: (0.3360, 0.2774)
+    - 3: (0.2176, 0.0613)
+    - 4: (0.4183, 0.4062)
+    - 5: (0.4310, 0.3778)
+    - 6: (0.4963, 0.5729)
+    - 7: (0.0936, 0.1130)
+    - 8: (0.1496, 0.1183)
+    - 9: (0.6977, 0.7783)
+- Note: There is a discrepancy between the training-reported mIoU and the evaluation script’s mean IoU. Likely causes include differences in metric definitions (mean over classes vs. NaN handling), preprocessing/resize pipelines, or class mappings. This will be reconciled in future updates.
+- Misc: Albumentations occasionally logs a harmless version check warning due to network timeouts during training.
