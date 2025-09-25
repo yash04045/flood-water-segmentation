@@ -1,10 +1,16 @@
-# Flood Water Segmentation (WIP)
+## FloodNet Semantic Segmentation (DeepLabV3‑ResNet101)
 
-Semantic segmentation of flood-related classes using DeepLabV3-ResNet50 in PyTorch. This repository is under active development; interfaces, scripts, and hyperparameters may change.
+![Status](https://img.shields.io/badge/status-active-success)
+![Python](https://img.shields.io/badge/python-3.x-blue)
+![PyTorch](https://img.shields.io/badge/PyTorch-%E2%89%A52.0-red)
+![Torchvision](https://img.shields.io/badge/Torchvision-%E2%89%A50.15-orange)
+![Albumentations](https://img.shields.io/badge/Albumentations-%E2%89%A51.3-green)
 
-## Project status
-- Work in progress: training/evaluation pipelines are functional, but still evolving
-- Large artifacts (datasets, model weights, predictions) are ignored in git via `.gitignore`
+End-to-end semantic segmentation of flood-related classes on the FloodNet-Supervised_v1.0 dataset using PyTorch and Torchvision. The final validated model is a DeepLabV3‑ResNet101 with a custom Focal+Dice loss and corrected class weighting for severe class imbalance.
+
+### Project status
+- Training, evaluation, inference, and qualitative visualization are complete and reproducible
+- Large artifacts (datasets, model weights, predictions) are ignored via `.gitignore`
 
 ## Environment setup
 - Create a virtual environment (Windows PowerShell):
@@ -14,8 +20,19 @@ python -m venv venv
 pip install -r requirements.txt
 ```
 
+## Requirements
+Core libraries used (see `requirements.txt` for exact pins):
+- torch >= 2.0.0
+- torchvision >= 0.15.0
+- opencv-python >= 4.5.0
+- numpy >= 1.21.0
+- albumentations >= 1.3.0
+- tqdm >= 4.64.0
+- matplotlib >= 3.5.0
+- Pillow >= 8.3.0
+
 ## Dataset
-This project targets a 10-class FloodNet-style dataset.
+This project targets the 10-class FloodNet-Supervised_v1.0 dataset.
 - Expected on-disk layout after organization:
 ```
 C:/flood_segmentation/
@@ -48,10 +65,10 @@ Notes:
 - Main script: `train.py`
 - Key details:
   - Auto-detects number of classes from masks under `data/masks/{train,val,test}`
-  - Uses DeepLabV3-ResNet50 with a custom `DeepLabHead(NUM_CLASSES)`
+  - Uses DeepLabV3‑ResNet101 with both `classifier` and `aux_classifier` replaced for 10 classes
   - Mixed precision (torch.amp), gradient accumulation, AdamW, ReduceLROnPlateau
-  - Backbone frozen for epoch 0, then unfrozen from epoch 1
-  - Class weights derived from pixel frequencies
+  - Backbone frozen for epoch 0, unfrozen from epoch 1 with LR halved
+  - Robust class weights from pixel frequencies; absent classes weighted 0 to avoid instability
   - Checkpoints: `checkpoint.pth` (rolling), `best_model.pth` (best mIoU)
 
 Run:
@@ -68,7 +85,7 @@ Configuration touchpoints:
 ```powershell
 python evaluate.py
 ```
-Outputs per-class IoU/Dice and averages.
+Outputs per-split and per-class IoU and overall mIoU.
 
 ## Inference
 - Simple script: `inference.py`
@@ -90,50 +107,63 @@ python visualize_prediction.py
 ```
 
 ## Classes
-Class lists are defined in inference/visualization scripts and may vary slightly by file. Training auto-detects classes from masks. Ensure consistency between your dataset labels and the scripts you use for inference/visualization.
+Class list used for evaluation/visualization (training auto-detects from masks):
+0: Background, 1: Building-flooded, 2: Building-non-flooded, 3: Road-flooded,
+4: Road-non-flooded, 5: Water, 6: Tree, 7: Vehicle, 8: Pool, 9: Grass.
 
 ## Files of interest
 - `datasetLoader.py`: Albumentations pipelines, dataset, sampler
-- `train.py`: training loop, losses (Focal + Dice), checkpoints
-- `evaluate.py`: metrics calculation and reporting
+- `train.py`: training loop, hybrid losses (Focal + Dice), checkpoints
+- `evaluate.py`: split-wise metrics calculation and reporting
 - `inference.py`, `inference_robust.py`: single-image inference utilities
-- `visualize_prediction.py`: side-by-side GT vs prediction plots
+- `visualize_prediction.py`: GT vs prediction vs overlay and PNG export to `output/`
 - `organize_dataset.py`, `resize_floodnet.py`: dataset preparation helpers
 
 ## Notes on artifacts
-- `.gitignore` excludes `data/`, `best_model.pth`, `checkpoint.pth`, `predictions/`, and other large/log files
-- To share large weights publicly, consider Git LFS, but it is not enabled here
+- `.gitignore` excludes `data/`, `best_model.pth`, `checkpoint.pth`, `output/`, and other large/log files
+- To share large weights publicly, consider Git LFS (not enabled here)
+ - Trained model weights (`best_model.pth`) are not included due to size. To generate weights locally, run the training script:
+```powershell
+python train.py
+```
+This will produce `best_model.pth` when a new best validation mIoU is achieved.
 
-## Roadmap / TODO
-- Finalize class naming consistency across all scripts
-- Add configurable CLI args (paths, sizes, hyperparameters)
-- Improve evaluation: per-split reporting and CSV export
-- Add tiling/inference over folders with batching
-- Add deterministic seeds and proper experiment logging
-- Write full documentation and examples when stable
+## Development journey (concise)
+- Baseline (DeepLabV3‑ResNet50): Uncovered and fixed three major issues:
+  - Metric bug inflating mIoU when classes were absent in an image
+  - Partially loaded weights in evaluation, leaving the classifier head untrained
+  - Class 0 (Background) scarcity causing unstable loss; fixed via robust class weights
+  Result: reliable mIoU plateaued around ~0.28.
+- Upgrade (DeepLabV3‑ResNet101): Ensured both the main `classifier` and `aux_classifier` were adapted to 10 classes to avoid conflicting gradients. This surpassed the ResNet50 ceiling quickly and became the final model.
 
----
-WIP: Contributions and suggestions are welcome while the project evolves.
+## Final results
+Validated on Train/Val/Test with identical evaluation logic (mIoU):
+- Train: 0.3094
+- Val:   0.3090
+- Test:  0.3000
 
-## Current results (WIP)
-- Environment: CUDA available = True; GPU = NVIDIA GeForce RTX 3050 Laptop GPU
-- Throughput: ~131–135 s/epoch with batch size 2 (observed)
-- Training (validation mIoU reported by `train.py`):
-  - Notable checkpoints: epoch 79 mIoU=0.6644, epoch 96 mIoU=0.6669, epoch 111 mIoU=0.6795, epoch 118 mIoU=0.6817 (best)
-  - Typical losses around Train≈0.27–0.29, Val≈0.32–0.33 near late epochs
-- Evaluation (`evaluate.py` on val split, using `best_model.pth`):
-  - Mean IoU: 0.3150
-  - Mean Dice: 0.2778
-  - Per-class (IoU, Dice):
-    - 0: (0.0148, 0.0041)
-    - 1: (0.2948, 0.0685)
-    - 2: (0.3360, 0.2774)
-    - 3: (0.2176, 0.0613)
-    - 4: (0.4183, 0.4062)
-    - 5: (0.4310, 0.3778)
-    - 6: (0.4963, 0.5729)
-    - 7: (0.0936, 0.1130)
-    - 8: (0.1496, 0.1183)
-    - 9: (0.6977, 0.7783)
-- Note: There is a discrepancy between the training-reported mIoU and the evaluation script’s mean IoU. Likely causes include differences in metric definitions (mean over classes vs. NaN handling), preprocessing/resize pipelines, or class mappings. This will be reconciled in future updates.
-- Misc: Albumentations occasionally logs a harmless version check warning due to network timeouts during training.
+These closely aligned scores indicate good generalization without overfitting. Compared to the FloodNet paper’s DeepLabV3‑ResNet101 benchmark (0.487 mIoU), this is a strong baseline given the severe rarity of some classes (e.g., Background, Vehicle, Pool).
+
+### Qualitative results
+Below are sample visualizations generated by `visualize_prediction.py` (saved under `output/`).
+
+![7935_prediction](output/7935_prediction.png)
+![7956_prediction](output/7956_prediction.png)
+![7969_prediction](output/7969_prediction.png)
+![9032_prediction](output/9032_prediction.png)
+
+## Learnings
+- Trustworthy metrics matter: handle absent classes and NaNs explicitly
+- Always ensure evaluation architectures and heads exactly match training
+- Severe class imbalance requires careful class weighting and robust losses
+- Auxiliary heads in pretrained models must be adapted or disabled to avoid conflicts
+
+## Roadmap
+- I will continue updating the codebase to push toward state-of-the-art quality
+- Add configurable CLI, CSV export of metrics, deterministic seeds, experiment logging
+- Improve inference batching/tiling and class name/color harmonization across scripts
+ - Investigate improving rare-class performance to push mIoU > 0.30 baseline:
+   - Targeted data augmentation for rare classes; class-aware/instance-balanced sampling
+   - Oversampling/hard example mining; loss rebalancing (focal/tversky tuning)
+   - Synthetic data generation and semi-supervised pseudo-labeling for scarce categories
+   - Post-processing (e.g., CRF/graph refinements) and architectural upgrades

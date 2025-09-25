@@ -39,6 +39,11 @@ logs/
 wandb/
 mlruns/
 outputs/
+output/*
+!output/7935_prediction.png
+!output/7956_prediction.png
+!output/7969_prediction.png
+!output/9032_prediction.png
 
 # Generated artifacts
 metrics.csv
