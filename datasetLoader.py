@@ -13,10 +13,12 @@ def get_train_transform():
         A.Affine(translate_percent=(-0.1,0.1),scale=(0.8,1.2),rotate=(-20,20),p=0.5),
         A.RandomBrightnessContrast(0.2,0.2,p=0.5),
         A.HueSaturationValue(20,30,20,p=0.3),
-        A.GaussNoise(var_limit=(10.0,50.0),p=0.2),
+        # Fixed GaussNoise parameter
+        A.GaussNoise(variance_limit=(10.0,50.0),p=0.2),
         A.Blur(blur_limit=3,p=0.2),
         A.RandomCrop(height=IMG_SIZE,width=IMG_SIZE,p=0.5),
-        A.CoarseDropout(max_holes=8, max_height=IMG_SIZE//8, max_width=IMG_SIZE//8, p=0.4), 
+        # Fixed CoarseDropout parameters
+        A.CoarseDropout(num_holes=8, max_h_size=IMG_SIZE//8, max_w_size=IMG_SIZE//8, p=0.4), 
         A.Resize(IMG_SIZE,IMG_SIZE),
         A.Normalize(mean=(0.485,0.456,0.406),std=(0.229,0.224,0.225)),
         ToTensorV2()

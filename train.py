@@ -8,6 +8,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torchvision import models
 from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
+from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+from torchvision.models.segmentation.fcn import FCNHead
 from tqdm import tqdm, trange
 from torch.amp import autocast, GradScaler
 
@@ -57,9 +60,10 @@ def compute_iou(preds, labels, num_classes):
         inter = (pred_inds & target_inds).sum().item()
         union = pred_inds.sum().item() + target_inds.sum().item() - inter
         if union == 0:
-            ious.append(1.0 if inter == 0 else 0.0)
+            ious.append(float("nan"))
         else:
             ious.append(inter / union)
+
     return ious
 
 def compute_dice(preds, labels, num_classes):
@@ -97,10 +101,38 @@ def dice_loss(pred, target, smooth=1e-6):
     dice = (2. * inter + smooth) / (union + smooth)
     return 1 - dice.mean()
 
+def tversky_loss(pred, target, alpha=0.3, beta=0.7, smooth=1e-6):
+    """ Generalized Dice: control FP vs FN penalty """
+    pred = F.softmax(pred, dim=1)
+    target_1h = F.one_hot(target, num_classes=pred.shape[1]).permute(0,3,1,2).float()
+
+    tp = torch.sum(pred * target_1h, dim=(0,2,3))
+    fp = torch.sum(pred * (1 - target_1h), dim=(0,2,3))
+    fn = torch.sum((1 - pred) * target_1h, dim=(0,2,3))
+
+    tversky = (tp + smooth) / (tp + alpha*fp + beta*fn + smooth)
+    return 1 - tversky.mean()
+
+def focal_tversky_loss(pred, target, alpha=0.3, beta=0.7, gamma=1.33):
+    """ Focal version of Tversky to focus on hard pixels """
+    tversky = 1 - tversky_loss(pred, target, alpha, beta)
+    return tversky ** gamma
+
+# Hybrid losses
 def get_focal_dice_loss(weights):
     focal = FocalLoss(gamma=2.0, weight=weights, ignore_index=-1)
     def hybrid(outputs, targets):
         return 0.6 * focal(outputs, targets) + 0.4 * dice_loss(outputs, targets)
+    return hybrid
+
+def get_tversky_loss(alpha=0.3, beta=0.7):
+    def hybrid(outputs, targets):
+        return tversky_loss(outputs, targets, alpha, beta)
+    return hybrid
+
+def get_focal_tversky_loss(alpha=0.3, beta=0.7, gamma=1.33):
+    def hybrid(outputs, targets):
+        return focal_tversky_loss(outputs, targets, alpha, beta, gamma)
     return hybrid
 
 # ---------------- Utils ----------------
@@ -150,17 +182,28 @@ def main():
     train_dataset = FloodDataset("data/images/train", "data/masks/train", transforms=get_train_transform())
     val_dataset   = FloodDataset("data/images/val", "data/masks/val", transforms=get_val_transform())
 
-    print("Counting pixel frequencies...")
+    print("Counting pixel frequencies for the training set...")
     pixel_counts = compute_pixel_class_counts(train_dataset)
-    total = sum(pixel_counts.values())
-    weights = torch.ones(NUM_CLASSES, dtype=torch.float)
-    for i in range(NUM_CLASSES):
-        weights[i] = total / (pixel_counts.get(i,1))
-    weights = (weights/weights.sum())*NUM_CLASSES
-    weights = weights.to(DEVICE)
-    print("Class weights:", weights.cpu().numpy())
 
-    EPOCHS=120; BATCH_SIZE=2
+    # Create weights but set the weight for the non-existent Class 0 to zero.
+    weights = torch.ones(NUM_CLASSES, dtype=torch.float)
+
+    # Calculate total only for classes that are actually in the training set
+    total_present_pixels = sum(pixel_counts.values())
+
+    for i in range(NUM_CLASSES):
+        if i in pixel_counts:
+            weights[i] = total_present_pixels / pixel_counts[i]
+        else:
+            # If a class is not in the training set (like your Class 0), give it a zero weight
+            # so it doesn't affect the loss function.
+            weights[i] = 0 
+
+    weights = (weights / weights.sum()) * (NUM_CLASSES - 1) # Normalize by number of PRESENT classes
+    weights = weights.to(DEVICE)
+    print("Corrected Class weights:", weights.cpu().numpy())
+
+    EPOCHS=250; BATCH_SIZE=2
     train_sampler = get_sampler(train_dataset)
     train_loader = DataLoader(train_dataset,batch_size=BATCH_SIZE,sampler=train_sampler,
                               num_workers=NUM_WORKERS,pin_memory=True,drop_last=True)
@@ -168,19 +211,21 @@ def main():
                               num_workers=NUM_WORKERS,pin_memory=True,drop_last=False)
 
     # model choice
-    use_resnet101=False
+    use_resnet101=True
     if use_resnet101:
-        model=models.segmentation.deeplabv3_resnet101(weights=DeepLabV3_ResNet50_Weights.DEFAULT)
+        model=models.segmentation.deeplabv3_resnet101(weights=DeepLabV3_ResNet101_Weights.DEFAULT)
     else:
         model=models.segmentation.deeplabv3_resnet50(weights=DeepLabV3_ResNet50_Weights.DEFAULT)
     from torchvision.models.segmentation.deeplabv3 import DeepLabHead
-    model.classifier=DeepLabHead(2048,NUM_CLASSES)
+    model.classifier = DeepLabHead(2048, NUM_CLASSES)
+    model.aux_classifier = FCNHead(1024, NUM_CLASSES)
     model=model.to(DEVICE)
 
     for p in model.backbone.parameters(): p.requires_grad=False
     print("Backbone frozen.")
 
-    criterion=get_focal_dice_loss(weights)
+    criterion = get_focal_dice_loss(weights=weights)
+
     optimizer=optim.AdamW(filter(lambda p:p.requires_grad, model.parameters()), lr=1e-4, weight_decay=1e-4)
     scheduler=optim.lr_scheduler.ReduceLROnPlateau(optimizer,mode="min",factor=0.5,patience=4,verbose=True,min_lr=1e-6)
 

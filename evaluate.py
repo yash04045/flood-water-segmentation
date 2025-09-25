@@ -3,100 +3,123 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader
 from torchvision import models
-from torchvision.models.segmentation import DeepLabV3_ResNet50_Weights
+from torchvision.models.segmentation import DeepLabV3_ResNet101_Weights
 from tqdm import tqdm
-import torch.nn as nn
 
+# Make sure these are imported correctly from your project
 from datasetLoader import FloodDataset, get_val_transform
 
+# --- Configuration ---
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+BATCH_SIZE = 2
+CHECKPOINT_PATH = "best_model.pth"
 NUM_CLASSES = 10
 
-# ---------------- Metrics ----------------
+# Class names based on your dataset
+CLASS_NAMES = {
+    0: 'Background', 1: 'Building-flooded', 2: 'Building-non-flooded',
+    3: 'Road-flooded', 4: 'Road-non-flooded', 5: 'Water',
+    6: 'Tree', 7: 'Vehicle', 8: 'Pool', 9: 'Grass'
+}
+
+# --- Metrics ---
 def compute_iou(preds, labels, num_classes):
+    """Computes Intersection over Union for each class."""
     ious = []
     preds = preds.view(-1)
     labels = labels.view(-1)
     for cls in range(num_classes):
-        pred_inds = preds == cls
-        target_inds = labels == cls
+        pred_inds = (preds == cls)
+        target_inds = (labels == cls)
         intersection = (pred_inds & target_inds).sum().item()
         union = pred_inds.sum().item() + target_inds.sum().item() - intersection
         if union == 0:
-            ious.append(float("nan"))
+            ious.append(float('nan'))
         else:
             ious.append(intersection / union)
     return ious
 
-def compute_dice(preds, labels, num_classes):
-    dices = []
-    preds = preds.view(-1)
-    labels = labels.view(-1)
-    for cls in range(num_classes):
-        pred_inds = preds == cls
-        target_inds = labels == cls
-        intersection = (pred_inds & target_inds).sum().item()
-        dice = (2. * intersection) / (pred_inds.sum().item() + target_inds.sum().item() + 1e-6)
-        dices.append(dice)
-    return dices
-
-def evaluate_model(model, loader, criterion):
+# --- Evaluation Loop ---
+def evaluate_model(model, loader, split_name="Val"):
+    """Runs the evaluation loop and computes metrics."""
     model.eval()
-    running_loss = 0.0
-    all_ious, all_dices = [], []
+    all_ious = []
 
     with torch.no_grad():
-        for images, masks in tqdm(loader, desc="Evaluating"):
-            images, masks = images.to(DEVICE), masks.to(DEVICE)
-            outputs = model(images)["out"]
+        for images, masks in tqdm(loader, desc=f"Evaluating {split_name}"):
+            images = images.to(DEVICE)
+            masks = masks.to(DEVICE)
 
-            loss = criterion(outputs, masks)
-            running_loss += loss.item()
-
+            outputs = model(images)['out']
             preds = torch.argmax(outputs, dim=1)
-            ious = compute_iou(preds, masks, NUM_CLASSES)
-            dices = compute_dice(preds, masks, NUM_CLASSES)
 
+            ious = compute_iou(preds.cpu(), masks.cpu(), NUM_CLASSES)
             all_ious.append(ious)
-            all_dices.append(dices)
 
-    mean_iou = np.nanmean(np.array(all_ious), axis=0)
-    mean_dice = np.nanmean(np.array(all_dices), axis=0)
+    mean_ious_per_class = np.nanmean(np.array(all_ious), axis=0)
+    mean_iou_overall = np.nanmean(mean_ious_per_class)
+    
+    return mean_iou_overall, mean_ious_per_class
 
-    return running_loss / len(loader), mean_iou, mean_dice
-
-
+# --- Main Execution ---
 def main():
-    # Load dataset
-    val_dataset = FloodDataset("data/images/val", "data/masks/val", transforms=get_val_transform())
-    val_loader = DataLoader(val_dataset, batch_size=2, shuffle=False, num_workers=2)
+    """Main function to run the evaluation on train + val + test sets."""
+    # Load datasets
+    train_dataset = FloodDataset("data/images/train", "data/masks/train", transforms=get_val_transform())
+    val_dataset   = FloodDataset("data/images/val", "data/masks/val", transforms=get_val_transform())
+    test_dataset  = FloodDataset("data/images/test", "data/masks/test", transforms=get_val_transform())
 
-    # Load model
-    weights = DeepLabV3_ResNet50_Weights.DEFAULT
-    model = models.segmentation.deeplabv3_resnet50(weights=weights)
+    train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    val_loader   = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False)
+    test_loader  = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False)
+
+    print(f"Loaded {len(train_dataset)} training images, "
+          f"{len(val_dataset)} validation images, "
+          f"{len(test_dataset)} test images.")
+
+    # --- Model definition (matches training) ---
+    print("Initializing ResNet-101 model...")
+    model = models.segmentation.deeplabv3_resnet101(weights=DeepLabV3_ResNet101_Weights.DEFAULT)
     from torchvision.models.segmentation.deeplabv3 import DeepLabHead
+    from torchvision.models.segmentation.fcn import FCNHead
     model.classifier = DeepLabHead(2048, NUM_CLASSES)
+    model.aux_classifier = FCNHead(1024, NUM_CLASSES)
     model = model.to(DEVICE)
 
-    # Load trained weights
-    checkpoint_path = "best_model.pth"
-    assert os.path.exists(checkpoint_path), "❌ best_model.pth not found!"
-    model.load_state_dict(torch.load(checkpoint_path, map_location=DEVICE), strict=False)
-    print(f"✅ Loaded best model from {checkpoint_path}")
+    # Load weights
+    assert os.path.exists(CHECKPOINT_PATH), f"❌ Error: '{CHECKPOINT_PATH}' not found!"
+    model.load_state_dict(torch.load(CHECKPOINT_PATH, map_location=DEVICE))
+    print(f"✅ Loaded best model weights from {CHECKPOINT_PATH}")
 
-    criterion = nn.CrossEntropyLoss()
+    # --- Evaluate on Train ---
+    train_miou, train_per_class = evaluate_model(model, train_loader, split_name="Train")
+    # --- Evaluate on Val ---
+    val_miou, val_per_class = evaluate_model(model, val_loader, split_name="Val")
+    # --- Evaluate on Test ---
+    test_miou, test_per_class = evaluate_model(model, test_loader, split_name="Test")
 
-    # Evaluate
-    val_loss, mean_iou, mean_dice = evaluate_model(model, val_loader, criterion)
+    # --- Print Results ---
+    print("\n\n--- 📊 Final Evaluation Results ---")
 
-    print("\n📊 Evaluation Results:")
-    print(f"Validation Loss: {val_loss:.4f}")
-    print(f"Mean IoU: {np.nanmean(mean_iou):.4f}")
-    print(f"Mean Dice: {np.nanmean(mean_dice):.4f}")
+    print(f"\nOverall Train mIoU: {train_miou:.4f}")
+    print("--- Per-Class Train IoU ---")
+    for i, iou in enumerate(train_per_class):
+        class_name = CLASS_NAMES.get(i, f"Class {i}")
+        print(f"  - {class_name:<22}: {iou:.4f}")
 
-    for cls, (iou, dice) in enumerate(zip(mean_iou, mean_dice)):
-        print(f"Class {cls}: IoU={iou:.4f}, Dice={dice:.4f}")
+    print(f"\nOverall Val mIoU: {val_miou:.4f}")
+    print("--- Per-Class Val IoU ---")
+    for i, iou in enumerate(val_per_class):
+        class_name = CLASS_NAMES.get(i, f"Class {i}")
+        print(f"  - {class_name:<22}: {iou:.4f}")
 
+    print(f"\nOverall Test mIoU: {test_miou:.4f}")
+    print("--- Per-Class Test IoU ---")
+    for i, iou in enumerate(test_per_class):
+        class_name = CLASS_NAMES.get(i, f"Class {i}")
+        print(f"  - {class_name:<22}: {iou:.4f}")
+
+    print("---------------------\n")
 
 if __name__ == "__main__":
     main()
